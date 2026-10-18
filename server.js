@@ -5,8 +5,7 @@ const crypto = require("node:crypto");
 const net = require("node:net");
 const { spawn } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
-const { applicationDefault, getApps, initializeApp } = require("firebase-admin/app");
-const firebaseAdminAuth = require("firebase-admin/auth");
+const { applicationDefault, cert, getApps, initializeApp } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
 
 require("dotenv").config({ path: path.join(__dirname, ".env") });
@@ -32,7 +31,6 @@ const firebasePublicConfig = {
   appId: process.env.FIREBASE_APP_ID || "",
 };
 let firestore;
-let firebaseAuth;
 
 function firebaseNotConfigured() {
   return Object.assign(
@@ -43,26 +41,76 @@ function firebaseNotConfigured() {
 
 function getFirebaseServices() {
   if (Object.values(firebasePublicConfig).some((value) => !value)) throw firebaseNotConfigured();
-  if (firestore && firebaseAuth) return { firestore, firebaseAuth };
+  if (firestore) return { firestore };
 
   try {
+    let credential = applicationDefault();
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+      let serviceAccount;
+      try {
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+      } catch {
+        throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON must contain valid JSON.");
+      }
+      if (serviceAccount.project_id && serviceAccount.project_id !== firebasePublicConfig.projectId) {
+        throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON belongs to a different Firebase project.");
+      }
+      credential = cert(serviceAccount);
+    }
     const app = getApps()[0] || initializeApp({
-      credential: applicationDefault(),
+      credential,
       projectId: firebasePublicConfig.projectId,
     });
     firestore = getFirestore(app);
-    const getAuth = firebaseAdminAuth.getAuth || firebaseAdminAuth.default?.getAuth;
-    if (typeof getAuth !== "function") {
-      throw new Error("Firebase Admin Auth SDK does not expose getAuth.");
-    }
-    firebaseAuth = getAuth(app);
-    return { firestore, firebaseAuth };
+    return { firestore };
   } catch (error) {
     throw Object.assign(
       new Error(`Could not initialize Firebase Admin SDK: ${error.message}`),
       { status: 503 },
     );
   }
+}
+
+async function verifyFirebaseIdToken(idToken) {
+  const authEmulatorHost = process.env.FIREBASE_AUTH_EMULATOR_HOST;
+  const authApiBase = authEmulatorHost
+    ? `http://${authEmulatorHost}/identitytoolkit.googleapis.com`
+    : "https://identitytoolkit.googleapis.com";
+  let response;
+  try {
+    response = await fetch(
+      `${authApiBase}/v1/accounts:lookup?key=${encodeURIComponent(firebasePublicConfig.apiKey)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken }),
+        signal: AbortSignal.timeout(10000),
+      },
+    );
+  } catch (error) {
+    throw Object.assign(
+      new Error(`Could not verify Firebase session: ${error.message}`),
+      { status: 503 },
+    );
+  }
+
+  if (response.status === 400) {
+    throw Object.assign(new Error("Your session is invalid or has expired. Please sign in again."), { status: 401 });
+  }
+  if (!response.ok) {
+    throw Object.assign(new Error("Firebase Authentication could not verify the session."), { status: 503 });
+  }
+
+  const result = await response.json();
+  const account = result.users?.[0];
+  if (!account?.localId) {
+    throw Object.assign(new Error("Your session is invalid or has expired. Please sign in again."), { status: 401 });
+  }
+  return {
+    uid: account.localId,
+    name: account.displayName,
+    email: account.email,
+  };
 }
 
 function monitorReference(monitorId) {
@@ -463,8 +511,9 @@ async function handleApi(request, response, url) {
   const services = getFirebaseServices();
   let identity;
   try {
-    identity = await services.firebaseAuth.verifyIdToken(token);
-  } catch {
+    identity = await verifyFirebaseIdToken(token);
+  } catch (error) {
+    if (error.status) throw error;
     throw Object.assign(new Error("Your session is invalid or has expired. Please sign in again."), { status: 401 });
   }
   const user = {
