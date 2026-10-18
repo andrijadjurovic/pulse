@@ -4,7 +4,7 @@ Pulse is a self-hosted uptime-monitoring prototype. The browser uses Firebase Au
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 22+
 - A Firebase project with Email/Password Authentication and Cloud Firestore enabled
 - Google Cloud Application Default Credentials for the Node server
 - Docker, only if you want custom JavaScript monitors

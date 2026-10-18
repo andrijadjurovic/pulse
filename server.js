@@ -6,7 +6,7 @@ const net = require("node:net");
 const { spawn } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 const { applicationDefault, getApps, initializeApp } = require("firebase-admin/app");
-const { getAuth } = require("firebase-admin/auth");
+const firebaseAdminAuth = require("firebase-admin/auth");
 const { getFirestore } = require("firebase-admin/firestore");
 
 require("dotenv").config({ path: path.join(__dirname, ".env") });
@@ -51,6 +51,10 @@ function getFirebaseServices() {
       projectId: firebasePublicConfig.projectId,
     });
     firestore = getFirestore(app);
+    const getAuth = firebaseAdminAuth.getAuth || firebaseAdminAuth.default?.getAuth;
+    if (typeof getAuth !== "function") {
+      throw new Error("Firebase Admin Auth SDK does not expose getAuth.");
+    }
     firebaseAuth = getAuth(app);
     return { firestore, firebaseAuth };
   } catch (error) {

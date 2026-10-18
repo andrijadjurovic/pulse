@@ -8,7 +8,7 @@
     "start": "npm run build && node server.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "@firebase/app": "^0.16.3",
